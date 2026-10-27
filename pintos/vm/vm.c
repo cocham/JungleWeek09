@@ -59,8 +59,7 @@ page_less (const struct hash_elem *a_,
  * page, do not create it directly and make it through this function or
  * `vm_alloc_page`. */
 bool
-vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
-		vm_initializer *init, void *aux) {
+vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable, vm_initializer *init, void *aux) {
 
 	ASSERT (VM_TYPE(type) != VM_UNINIT)
 
@@ -68,13 +67,42 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 
 	/* Check wheter the upage is already occupied or not. */
 	if (spt_find_page (spt, upage) == NULL) {
-		/* TODO: Create the page, fetch the initialier according to the VM type,
-		 * TODO: and then create "uninit" page struct by calling uninit_new. You
-		 * TODO: should modify the field after calling the uninit_new. */
-
-		/* TODO: Insert the page into the spt. */
 		
+		struct page *new_page = malloc(sizeof(struct page));
+		
+		if (new_page == NULL) {
+			return false;
+		}
 
+		// VM_TYPE에 따른 초기화를 진행
+		/*
+		VM_ANON = 1
+		VM_FILE = 2
+		*/
+		switch (VM_TYPE(type))
+		{
+		case VM_ANON:
+			uninit_new(page, upage, init, type, aux, anon_initializer);
+			break;
+		case VM_FILE:
+			uninit_new(page, upage, init, type, aux, file_backed_initializer);
+			break;
+			
+		default:
+			free(page);						
+
+			goto err;
+			break;
+		}
+
+		page->writable = writable;
+
+		if (!spt_insert_page(spt,new_page)) {
+			free(page);
+			goto err;
+		}
+
+		return true;
 	}
 err:
 	return false;
@@ -87,13 +115,13 @@ spt_find_page (struct supplemental_page_table *spt UNUSED, void *va UNUSED) {
 	/* TODO: Fill this function. */
 	struct page *finding_page = NULL;
 	
-	struct vm_entry look_up;
+	struct spt_entry look_up;
 	lookup.va = pg_round_down(va); // 해시 테이블 인덱스 == SPT 인덱스. va로 해당 블록을 찾아감(0번째 1번째 등등...)
 
 	struct hash_elem *finding_hash_elem = hash_find(&spt->SPT_hash, &look_up.elem);
 	
 	if (finding_hash_elem != NULL) {
-		finding_page = hash_entry(finding_hash_elem, struct vm_entry, hash_elem)->page;
+		finding_page = hash_entry(finding_hash_elem, struct spt_entry, hash_elem)->page;
 	}
 
 	return finding_page;
@@ -112,7 +140,7 @@ spt_insert_page (struct supplemental_page_table *spt UNUSED,
 	}
 	
 	// 메모리 할당
-	struct vm_entry *entry = malloc(sizeof(struct vm_entry));
+	struct spt_entry *entry = malloc(sizeof(struct spt_entry));
 
 	if (entry == NULL) {
 		return false;
@@ -258,7 +286,7 @@ vm_do_claim_page (struct page *page) {
 	/* set up the MMU. */
 	/* add the mapping from the virtual address to the physical address in the page table. */
 	
-	return swap_in (page, frame->kva);
+	return swap_in (page, frame->kva); /* return page->operations->swap_in(page, frame->kva); */
 }
 
 /* Initialize new supplemental page table */

@@ -45,7 +45,8 @@ struct page {
 	const struct page_operations *operations;
 	void *va;              /* Address in terms of user space */
 	struct frame *frame;   /* Back reference for frame */
-
+	bool writable;
+	
 	/* Your implementation */
 
 	/* Per-type data are binded into the union.
@@ -122,11 +123,20 @@ struct supplemental_page_table {
 
 };
 
-struct struct_entry {
+struct spt_entry {
 	void *va; /* 키 (가상주소) */
 	struct page *page; /* 값 (페이지) */
 	struct hash_elem elem;
 };
+
+struct vm_entry {
+	int VM_BIN;
+	uint32_t zero_bytes;
+	uint32_t read_bytes;
+	off_t offset;
+	struct file file; //이렇게 하면 복사됨. file포인터로 수정?
+};
+
 
 #include "threads/thread.h"
 void supplemental_page_table_init (struct supplemental_page_table *spt);
