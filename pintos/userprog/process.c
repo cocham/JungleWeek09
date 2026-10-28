@@ -906,19 +906,20 @@ lazy_load_segment (struct page *page, void *aux) {
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
-	struct file *file = aux->file;
-	off_t ofs = aux->ofs;
+	struct vm_entry *vm_entry = aux;
+	struct file *file = vm_entry->file;
+	off_t ofs = vm_entry->offset;
 
 	file_seek (file, ofs); // 파일 포인터를 오프셋 위치로 이동
 	
-	if (file_read(file,page->frame->kva,aux->read_bytes) != (int) page_read_bytes){
+	if (file_read(file,page->frame->kva,vm_entry->read_bytes) != (int) vm_entry->read_bytes){
 		palloc_free_page(page->frame->kva);
 		free(page->frame);
 		return false;
 	} 
 
 	/* 나머지 공간을 0으로 채움 */
-	memset (page->frame->kva + aux->read_bytes, 0, aux->zero_bytes);
+	memset (page->frame->kva + vm_entry->read_bytes, 0, vm_entry->zero_bytes);
 	
 	
 	// if(!install_page(page->va,page->frame->kva,page->writable)){
@@ -963,8 +964,8 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage, uint32_t read_bytes,
 		
 		struct vm_entry *aux = malloc(sizeof(struct vm_entry));
 		aux->file = file;
-		aux->read_byte = page_read_bytes;
-		aux->zero_byte = page_zero_bytes;
+		aux->read_bytes = page_read_bytes;
+		aux->zero_bytes = page_zero_bytes;
 		aux->offset = ofs;
 
 		if (!vm_alloc_page_with_initializer (VM_ANON, upage, writable, lazy_load_segment, aux))
