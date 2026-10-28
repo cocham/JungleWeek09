@@ -134,7 +134,7 @@ struct vm_entry {
 	uint32_t zero_bytes;
 	uint32_t read_bytes;
 	off_t offset;
-	struct file file; //이렇게 하면 복사됨. file포인터로 수정?
+	struct file *file; //이렇게 하면 복사됨. file포인터로 수정?
 };
 
 

@@ -3,8 +3,8 @@
 #include "threads/malloc.h"
 #include "vm/vm.h"
 #include "vm/inspect.h"
-#include "vm/hash.h"
-
+#include "lib/kernel/hash.h"
+#include "threads/vaddr.h" 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
 void
@@ -41,18 +41,18 @@ static struct frame *vm_evict_frame (void);
 /* Returns a hash value for page p. */
 unsigned
 page_hash (const struct hash_elem *p_, void *aux UNUSED) {
-  const struct page *p = hash_entry (p_, struct page, hash_elem);
-  return hash_bytes (&p->addr, sizeof p->addr);
+  const struct spt_entry *p = hash_entry (p_, struct spt_entry, elem);
+  return hash_bytes (&p->va, sizeof p->va);
 }
 
 /* Returns true if page a precedes page b. */
 bool
 page_less (const struct hash_elem *a_,
            const struct hash_elem *b_, void *aux UNUSED) {
-  const struct page *a = hash_entry (a_, struct page, hash_elem);
-  const struct page *b = hash_entry (b_, struct page, hash_elem);
+  const struct spt_entry *a = hash_entry (a_, struct spt_entry, elem);
+  const struct spt_entry *b = hash_entry (b_, struct spt_entry, elem);
 
-  return a->addr < b->addr;
+  return a->va < b->va;
 }
 
 /* Create the pending page object with initializer. If you want to create a
@@ -82,23 +82,23 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable, v
 		switch (VM_TYPE(type))
 		{
 		case VM_ANON:
-			uninit_new(page, upage, init, type, aux, anon_initializer);
+			uninit_new(new_page, upage, init, type, aux, anon_initializer);
 			break;
 		case VM_FILE:
-			uninit_new(page, upage, init, type, aux, file_backed_initializer);
+			uninit_new(new_page, upage, init, type, aux, file_backed_initializer);
 			break;
 			
 		default:
-			free(page);						
+			free(new_page);						
 
 			goto err;
 			break;
 		}
 
-		page->writable = writable;
+		new_page->writable = writable;
 
 		if (!spt_insert_page(spt,new_page)) {
-			free(page);
+			free(new_page);
 			goto err;
 		}
 
@@ -116,12 +116,12 @@ spt_find_page (struct supplemental_page_table *spt UNUSED, void *va UNUSED) {
 	struct page *finding_page = NULL;
 	
 	struct spt_entry look_up;
-	lookup.va = pg_round_down(va); // 해시 테이블 인덱스 == SPT 인덱스. va로 해당 블록을 찾아감(0번째 1번째 등등...)
+	look_up.va = pg_round_down(va); // 해시 테이블 인덱스 == SPT 인덱스. va로 해당 블록을 찾아감(0번째 1번째 등등...)
 
 	struct hash_elem *finding_hash_elem = hash_find(&spt->SPT_hash, &look_up.elem);
 	
 	if (finding_hash_elem != NULL) {
-		finding_page = hash_entry(finding_hash_elem, struct spt_entry, hash_elem)->page;
+		finding_page = hash_entry(finding_hash_elem, struct spt_entry, elem)->page;
 	}
 
 	return finding_page;
@@ -149,7 +149,7 @@ spt_insert_page (struct supplemental_page_table *spt UNUSED,
 	entry->va = page->va; // 가상 주소
 	entry->page = page; // 페이지 참조
 
-	if (hash_insert (struct hash *hash, struct hash elem *element) != NULL) {
+	if (hash_insert (&entry->page, &entry->elem) != NULL) { // 여기 문제
 		free(entry);
 		return false;
 	}
@@ -192,7 +192,7 @@ vm_get_frame (void) {
 	
 	ASSERT(frame != NULL);
 
-	frame->kva = palloc_get_page(PALLOC_USER);
+	frame->kva = palloc_get_page(PAL_USER);
 	
 	if (frame->kva == NULL) { // frame에서 가용 가능한 페이지가 없다면
 
@@ -270,7 +270,7 @@ vm_do_claim_page (struct page *page) {
 	frame->page = page;
 	page->frame = frame;
 	
-	if (!pml4_set_page(thread_current ()->pml4, page->va, frame->kva, page->rw)) {
+	if (!pml4_set_page(thread_current ()->pml4, page->va, frame->kva, page->writable)) {
 		vm_dealloc_page(page); /* 문제 발생 시 추후 수정 (페이지를 물리 메모리와 가상 공간에서 아예 삭제)*/
 		return false;
 	}
