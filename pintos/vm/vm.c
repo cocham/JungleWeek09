@@ -4,7 +4,8 @@
 #include "vm/vm.h"
 #include "vm/inspect.h"
 #include "lib/kernel/hash.h"
-#include "threads/vaddr.h" 
+#include "threads/vaddr.h"
+
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
 void
@@ -37,7 +38,7 @@ page_get_type (struct page *page) {
 static struct frame *vm_get_victim (void);
 static bool vm_do_claim_page (struct page *page);
 static struct frame *vm_evict_frame (void);
-
+void kill_spt_entry (struct hash_elem *e, void *aux);
 /* Returns a hash value for page p. */
 unsigned
 page_hash (const struct hash_elem *p_, void *aux UNUSED) {
@@ -149,7 +150,7 @@ spt_insert_page (struct supplemental_page_table *spt UNUSED,
 	entry->va = page->va; // 가상 주소
 	entry->page = page; // 페이지 참조
 
-	if (hash_insert (&entry->page, &entry->elem) != NULL) { // 여기 문제
+	if (hash_insert (&spt->SPT_hash, &entry->elem) != NULL) {
 		free(entry);
 		return false;
 	}
@@ -226,10 +227,12 @@ bool
 vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 		bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
 	struct supplemental_page_table *spt UNUSED = &thread_current ()->spt;
-	struct page *page = NULL;
+	struct page *page = spt_find_page(spt,addr);
 	/* TODO: Validate the fault */
 	/* TODO: Your code goes here */
-
+	if(page==NULL){
+		return false;
+	}
 	return vm_do_claim_page (page);
 }
 
@@ -282,7 +285,7 @@ vm_do_claim_page (struct page *page) {
 	그런 다음 MMU를 설정한다.
 	→ 가상 주소와 물리 주소를 매핑한 정보를 페이지 테이블에 추가해야 한다는 것을 의미
   	*/
-
+ 
 	/* set up the MMU. */
 	/* add the mapping from the virtual address to the physical address in the page table. */
 	
@@ -301,6 +304,67 @@ supplemental_page_table_init (struct supplemental_page_table *spt UNUSED) {
 bool
 supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 		struct supplemental_page_table *src UNUSED) {
+			 
+			struct hash_iterator i;
+			
+			hash_first(&i,&src->SPT_hash);
+			
+			while(hash_next(&i)){
+				
+				struct spt_entry *src_entry = hash_entry(hash_cur(&i),struct spt_entry,elem);
+				struct page *src_page = src_entry->page;
+
+				enum vm_type type = src_page->operations->type;
+				void *va = src_page->va;
+				bool writable = src_page->writable;
+				
+				/* 부모 spt_entry를 자식 spt_entry로 복사 */
+				// struct spt_entry *dst_entry = malloc(sizeof(struct spt_entry));
+
+				// if (dst_entry == NULL)
+				// 	return NULL;
+				
+				// dst_entry = memcpy(dst_entry, src_entry, sizeof(struct spt_entry));
+
+				if (type == VM_UNINIT) {
+					
+					enum vm_type origin_type = src_page->uninit.type;
+					vm_initializer *init = src_page->uninit.init;
+					
+					struct vm_entry *parent_info = src_page->uninit.aux;
+					struct vm_entry *child_info = malloc(sizeof(struct vm_entry));
+					
+					if (child_info == NULL) {
+						return false;
+					}
+
+					memcpy(child_info, parent_info, sizeof(struct vm_entry));
+
+					if (!vm_alloc_page_with_initializer(origin_type, va, writable, init, child_info)) {
+						//free(dst_entry);
+						free(child_info);
+						return false;
+					}
+				
+				} else if (type == VM_FILE || type == VM_ANON) {
+
+					if (!vm_alloc_page(type, va, writable)) return false;
+
+					struct page *dst_page = spt_find_page(dst, va);
+
+					if (!vm_do_claim_page(dst_page)) return false;
+					
+					memcpy(dst_page->frame->kva, src_page->frame->kva, PGSIZE);
+					// frame copy
+				
+				} else {
+
+					return false;
+				}
+				// hash_insert(&dst->SPT_hash, &ds);
+				
+			}
+			return true;
 }
 
 /* Free the resource hold by the supplemental page table */
@@ -308,4 +372,19 @@ void
 supplemental_page_table_kill (struct supplemental_page_table *spt UNUSED) {
 	/* TODO: Destroy all the supplemental_page_table hold by thread and
 	 * TODO: writeback all the modified contents to the storage. */
+	
+	hash_clear(&spt->SPT_hash, kill_spt_entry);
+	
+	 // typedef void hash_action_func (struct hash_elem *e, void *aux);
+}
+
+void 
+kill_spt_entry (struct hash_elem *e, void *aux) {	
+	struct spt_entry *entry = hash_entry (e, struct spt_entry, elem);
+
+	if (entry != NULL && entry->page != NULL) {
+		vm_dealloc_page(entry->page);
+	}
+
+	free (entry);
 }
