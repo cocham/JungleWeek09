@@ -5,7 +5,7 @@
 #include "vm/inspect.h"
 #include "lib/kernel/hash.h"
 #include "threads/vaddr.h"
-#include "vm/file.c"
+
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
 void
@@ -373,7 +373,7 @@ supplemental_page_table_kill (struct supplemental_page_table *spt UNUSED) {
 	/* TODO: Destroy all the supplemental_page_table hold by thread and
 	 * TODO: writeback all the modified contents to the storage. */
 	
-	hash_destroy(&spt->SPT_hash, kill_spt_entry);
+	hash_clear(&spt->SPT_hash, kill_spt_entry);
 	
 	 // typedef void hash_action_func (struct hash_elem *e, void *aux);
 }
