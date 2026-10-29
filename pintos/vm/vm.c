@@ -301,6 +301,67 @@ supplemental_page_table_init (struct supplemental_page_table *spt UNUSED) {
 bool
 supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 		struct supplemental_page_table *src UNUSED) {
+			 
+			struct hash_iterator i;
+			
+			hash_first(&i,&src->SPT_hash);
+			
+			while(hash_next(&i)){
+				
+				struct spt_entry *src_entry = hash_entry(hash_cur(&i),struct spt_entry,elem);
+				struct page *src_page = src_entry->page;
+
+				enum vm_type type = src_page->operations->type;
+				void *va = src_page->va;
+				bool writable = src_page->writable;
+				
+				/* 부모 spt_entry를 자식 spt_entry로 복사 */
+				// struct spt_entry *dst_entry = malloc(sizeof(struct spt_entry));
+
+				// if (dst_entry == NULL)
+				// 	return NULL;
+				
+				// dst_entry = memcpy(dst_entry, src_entry, sizeof(struct spt_entry));
+
+				if (type == VM_UNINIT) {
+					
+					enum vm_type origin_type = src_page->uninit.type;
+					vm_initializer *init = src_page->uninit.init;
+					
+					struct vm_entry *parent_info = src_page->uninit.aux;
+					struct vm_entry *child_info = malloc(sizeof(struct vm_entry));
+					
+					if (child_info == NULL) {
+						return false;
+					}
+
+					memcpy(child_info, parent_info, sizeof(struct vm_entry));
+
+					if (!vm_alloc_page_with_initializer(origin_type, va, writable, init, child_info)) {
+						//free(dst_entry);
+						free(child_info);
+						return false;
+					}
+				
+				} else if (type == VM_FILE || type == VM_ANON) {
+
+					if (!vm_alloc_page(type, va, writable)) return false;
+
+					struct page *dst_page = spt_find_page(dst, va);
+
+					if (!vm_do_claim_page(dst_page)) return false;
+					
+					memcpy(dst_page->frame->kva, src_page->frame->kva, PGSIZE);
+					// frame copy
+				
+				} else {
+
+					return false;
+				}
+				// hash_insert(&dst->SPT_hash, &ds);
+				
+			}
+			return true;
 }
 
 /* Free the resource hold by the supplemental page table */
