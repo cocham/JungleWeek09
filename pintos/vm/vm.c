@@ -150,7 +150,7 @@ spt_insert_page (struct supplemental_page_table *spt UNUSED,
 	entry->va = page->va; // 가상 주소
 	entry->page = page; // 페이지 참조
 
-	if (hash_insert (&entry->page, &entry->elem) != NULL) { // 여기 문제
+	if (hash_insert (&spt->SPT_hash, &entry->elem) != NULL) {
 		free(entry);
 		return false;
 	}
@@ -227,10 +227,12 @@ bool
 vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 		bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
 	struct supplemental_page_table *spt UNUSED = &thread_current ()->spt;
-	struct page *page = NULL;
+	struct page *page = spt_find_page(spt,addr);
 	/* TODO: Validate the fault */
 	/* TODO: Your code goes here */
-
+	if(page==NULL){
+		return false;
+	}
 	return vm_do_claim_page (page);
 }
 
