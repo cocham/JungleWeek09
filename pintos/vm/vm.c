@@ -38,7 +38,7 @@ page_get_type (struct page *page) {
 static struct frame *vm_get_victim (void);
 static bool vm_do_claim_page (struct page *page);
 static struct frame *vm_evict_frame (void);
-
+void kill_spt_entry (struct hash_elem *e, void *aux);
 /* Returns a hash value for page p. */
 unsigned
 page_hash (const struct hash_elem *p_, void *aux UNUSED) {
@@ -370,4 +370,19 @@ void
 supplemental_page_table_kill (struct supplemental_page_table *spt UNUSED) {
 	/* TODO: Destroy all the supplemental_page_table hold by thread and
 	 * TODO: writeback all the modified contents to the storage. */
+	
+	hash_destroy(&spt->SPT_hash, kill_spt_entry);
+	
+	 // typedef void hash_action_func (struct hash_elem *e, void *aux);
+}
+
+void 
+kill_spt_entry (struct hash_elem *e, void *aux) {	
+	struct spt_entry *entry = hash_entry (e, struct spt_entry, elem);
+
+	if (entry != NULL && entry->page != NULL) {
+		vm_dealloc_page(entry->page);
+	}
+
+	free (entry);
 }
