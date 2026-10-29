@@ -4,7 +4,8 @@
 #include "vm/vm.h"
 #include "vm/inspect.h"
 #include "lib/kernel/hash.h"
-#include "threads/vaddr.h" 
+#include "threads/vaddr.h"
+#include "vm/file.c"
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
 void
@@ -282,7 +283,7 @@ vm_do_claim_page (struct page *page) {
 	그런 다음 MMU를 설정한다.
 	→ 가상 주소와 물리 주소를 매핑한 정보를 페이지 테이블에 추가해야 한다는 것을 의미
   	*/
-
+ 
 	/* set up the MMU. */
 	/* add the mapping from the virtual address to the physical address in the page table. */
 	
