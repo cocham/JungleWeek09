@@ -16,7 +16,7 @@
 #include "devices/input.h"     // input_getc
 #include "userprog/process.h"
 #include "threads/palloc.h"
-#include "threads/init.h" 
+#include "threads/init.h" S
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -38,7 +38,8 @@ int sys_write(int fd, const void *buffer, unsigned size); // 구현/테스트X
 void seek (int fd, unsigned position); // 미구현
 unsigned tell (int fd); // 미구현
 void sys_close (int fd); // 구현/테스트X
-
+void *sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset);
+void *sys_munmap(void *addr);
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 
@@ -202,10 +203,12 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			sys_close ((int) f->R.rdi);
 			break;
 		// Project Part 3 - 4
-		// case SYS_MMAP:
-		// 	break;
-		// case SYS_MUNMAP:
-		// 	break;
+		case SYS_MMAP:
+			f->R.rax = sys_mmap((void *) f->R.rdi, (size_t) f->R.rsi, (int) f->R.rdx, (int) f->R.r10, (off_t) f->R.r8);
+			break;
+		case SYS_MUNMAP:
+			f->R.rax = sys_munmap((void *) f->R.rdi);
+			break;
 		// case SYS_CHDIR:
 		// 	break;
 		// case SYS_MKDIR:
@@ -235,6 +238,75 @@ syscall_handler (struct intr_frame *f UNUSED) {
 // halt(void){
 // 	power_off();
 // }
+
+/* sys_mmap (userprog/syscall.c)
+ *
+ * [1. 주소 검사]
+ *  - addr == NULL → 실패                     (mmap-null)
+ *  - addr이 페이지 정렬 안 됨 → 실패          (mmap-misalign)
+ *  - addr이 커널 주소 → 실패                  (mmap-kernel)
+ *  - addr + length가 커널 영역으로 넘어가거나
+ *    덧셈이 넘쳐서 addr보다 작아짐 → 실패      (mmap-kernel)
+ *
+ * [2. 길이/오프셋 검사]
+ *  - length == 0 → 실패                       (mmap-zero-len)
+ *  - offset이 페이지 정렬 안 됨 → 실패         (mmap-bad-off)
+    - offset = 4096일 때
+    - 
+    - 파일:   [0~4095][4096~8191][8192~12287] ...
+    -                     ↓          ↓
+    - 메모리:         [addr 페이지][addr+4KB 페이지]
+
+ *
+ * [3. fd 검사]
+ *  - fd가 0, 1(콘솔) → 실패                   (mmap-bad-fd2, 3)
+ *  - fd_get(fd)로 file 못 찾음 → 실패          (mmap-bad-fd)
+ *  - file_length(file) == 0 → 실패            (mmap-zero)
+ *
+ * [4. do_mmap 호출]
+ *  - do_mmap(addr, length, writable, file, offset)의 결과를 그대로 리턴
+ */
+void *
+sys_munmap(void *addr){
+
+}
+
+void *
+sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset) {
+	
+	uintptr_t start = (uintptr_t) addr;
+
+
+	/* 1. 주소 검사 */
+	if (addr == NULL) return NULL;
+	if (pg_ofs (addr) != 0) return NULL; /* 페이지 경계 검사 */
+	
+	// 2. offset 검사
+	if (length == 0 || offset < 0 || offset % PGSIZE != 0) {
+		return NULL;
+	}
+
+	/* 유저 영역 검사 */
+	if (start + length < start) return NULL;
+	if (is_kernel_vaddr (addr) || is_kernel_vaddr ((void *)(start + length - 1))) return NULL;
+	
+	//3. fd 검사
+	
+	if (fd <= 1 || fd >= FD_MAX){
+		return NULL;
+	}
+	
+	struct file *file = fd_get(fd);
+
+	if(file == NULL || file_length(file) == 0){ 
+		return NULL;
+	}
+	
+	return do_mmap(addr,length,writable,file,offset);
+	
+} 
+
+
 unsigned 
 tell (int fd){
 	struct file *file = fd_get(fd);
