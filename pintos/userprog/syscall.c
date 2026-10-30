@@ -17,6 +17,9 @@
 #include "userprog/process.h"
 #include "threads/palloc.h"
 #include "threads/init.h" 
+#ifdef VM
+#include "vm/vm.h"
+#endif
 
 typedef int pid_t;
 struct lock file_lock;
@@ -70,9 +73,24 @@ syscall_init (void) {
 // 포인터가 존재하는지 확인하는 유틸 함수
 static void 
 check_address(const void *ptr){
-	if(ptr == NULL || !is_user_vaddr(ptr) || !pml4_get_page(thread_current()->pml4, ptr)){
+	/* 1. NULL이나 커널 주소면 바로 종료 */
+	if (ptr == NULL || !is_user_vaddr(ptr))
 		sys_exit(-1);
-	}
+
+	/* 2. 이미 매핑돼 있으면 통과 */
+	if (pml4_get_page(thread_current()->pml4, ptr))
+		return;
+
+	#ifdef VM
+		/* 3. 매핑은 없지만 SPT에 등록된 페이지면 통과
+		*    (커널이 접근할 때 page fault로 올라옴) */
+		if (spt_find_page(&thread_current()->spt, pg_round_down(ptr)))
+			return;
+	#endif
+
+	/* 4. 어디에도 없으면 잘못된 주소 */
+	sys_exit(-1);
+
 }
 
 static void
