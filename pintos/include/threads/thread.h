@@ -152,6 +152,9 @@ struct thread {
 
 	struct file *running_file;
 	// 현재 실행중인 파일
+	
+	uintptr_t user_rsp; // *여부 확인
+
 
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
@@ -162,9 +165,12 @@ struct thread {
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
 	struct supplemental_page_table spt;
+	
+
 #endif
 
 	/* Owned by thread.c. */
+	
 	struct intr_frame tf;               /* Information for switching */
 	unsigned magic;                     /* Detects stack overflow. */
 };
