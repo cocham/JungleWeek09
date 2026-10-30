@@ -215,6 +215,7 @@ vm_get_frame (void) {
 /* Growing the stack. */
 static void
 vm_stack_growth (void *addr UNUSED) {
+	vm_alloc_page(VM_ANON, pg_round_down(addr), true);
 }
 
 /* Handle the fault on write_protected page */
@@ -224,16 +225,51 @@ vm_handle_wp (struct page *page UNUSED) {
 
 /* Return true on success */
 bool
-vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
-		bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
+vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED, bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
+	
 	struct supplemental_page_table *spt UNUSED = &thread_current ()->spt;
-	struct page *page = spt_find_page(spt,addr);
-	/* TODO: Validate the fault */
-	/* TODO: Your code goes here */
-	if(page==NULL){
+	
+	if (addr == NULL || !is_user_vaddr(addr)){
 		return false;
 	}
-	return vm_do_claim_page (page);
+	
+	if (!not_present) {
+		return false;
+	}
+
+
+	struct page *page = spt_find_page(spt,addr);
+	if (page != NULL) {
+		if (write && !page->writable) {
+			return false;
+		}
+
+		return vm_do_claim_page (page);
+	}
+
+	/* TODO: Validate the fault */
+	/* TODO: Your code goes here */
+
+	if(page == NULL){
+		
+		// 조건 1 user_addr,
+		// 조건 2 1<<20 으로 
+		// a >= rsp - 8 && a >= stakc의 1MB크기 && 
+
+		uintptr_t rsp = user ? f->rsp : thread_current ()->user_rsp;
+
+		uintptr_t fault_addr = (uintptr_t) addr;
+		
+		if (fault_addr >= rsp - 8 && fault_addr >= USER_STACK - ONE_MB && fault_addr < USER_STACK) {
+			
+			vm_stack_growth(addr);
+			return vm_claim_page(addr);
+		}
+		
+		return false;
+	}
+
+	return false;
 }
 
 /* Free the page.

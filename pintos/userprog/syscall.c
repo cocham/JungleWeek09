@@ -86,6 +86,12 @@ check_address(const void *ptr){
 		*    (커널이 접근할 때 page fault로 올라옴) */
 		if (spt_find_page(&thread_current()->spt, pg_round_down(ptr)))
 			return;
+
+		uintptr_t addr = (uintptr_t) ptr;
+		uintptr_t rsp = thread_current ()->user_rsp;
+		if (addr >= rsp - 8 && addr >= USER_STACK - ONE_MB && addr < USER_STACK) {
+			return;	
+		}	
 	#endif
 
 	/* 4. 어디에도 없으면 잘못된 주소 */
@@ -101,6 +107,8 @@ check_buffer(const void *buf, unsigned size){
 
 	const uint8_t *start = buf; // 버퍼의 시작
 	const uint8_t *end = start + size - 1; //주소의 끝
+
+	check_address(start);
 
 	// 주소의 끝까지 페이지를 이동하면서 구경
 	for(const uint8_t *page = pg_round_down(start); page <= end; page += PGSIZE){
@@ -122,7 +130,8 @@ check_string (const char *str) {
 /* The main system call interface */
 void
 syscall_handler (struct intr_frame *f UNUSED) {
-
+	thread_current()->user_rsp = (uintptr_t) f->rsp; //변환 값 나중에 확인?
+	
 	// rax = 시스템 콜 번호
 	// rip; 돌아갈 주소
     // cs; 돌아갈 모드

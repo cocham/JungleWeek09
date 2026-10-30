@@ -4,6 +4,8 @@
 #include "threads/palloc.h"
 #include <hash.h>
 
+#define ONE_MB (1 << 20) // 1MB
+
 enum vm_type {
 	/* page not initialized */
 	VM_UNINIT = 0,
