@@ -204,7 +204,7 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			break;
 		// Project Part 3 - 4
 		case SYS_MMAP:
-			f->R.rax = sys_mmap((void *) f->R.rdi, (size_t) f->R.rsi, (int) f->R.rdx, (int) f->R.r10, (off_t) f->R.r8);
+			f->R.rax = sys_mmap((uintptr_t) f->R.rdi, (size_t) f->R.rsi, (int) f->R.rdx, (int) f->R.r10, (off_t) f->R.r8);
 			break;
 		case SYS_MUNMAP:
 			f->R.rax = sys_munmap((void *) f->R.rdi);
@@ -276,13 +276,12 @@ sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset) {
 	
 	uintptr_t start = (uintptr_t) addr;
 
-
 	/* 1. 주소 검사 */
 	if (addr == NULL) return NULL;
 	if (pg_ofs (addr) != 0) return NULL; /* 페이지 경계 검사 */
 	
 	// 2. offset 검사
-	if (length == 0 || offset < 0 || offset % PGSIZE != 0) {
+	if (length <= 0 || offset < 0 || offset % PGSIZE != 0) {
 		return NULL;
 	}
 
