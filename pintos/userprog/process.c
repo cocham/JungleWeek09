@@ -906,6 +906,13 @@ lazy_load_segment (struct page *page, void *aux) {
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
+	/*
+	    페이지 폴트 발생 시 호출되어 해당 페이지에 실제 데이터를 파일에서 읽어오는 함수.
+	    aux로 전달된 vm_entry 구조체에서 파일, 읽을 바이트 수, 오프셋 등 로딩 정보를 가져옴.
+	    파일에서 필요한 바이트만큼 page->frame->kva(물리 메모리)에 읽어들임.
+	    읽은 데이터 이후 남은 부분은 0으로 초기화(제로 패딩).
+	    동적 할당한 vm_entry 메모리를 해제.
+	*/
 	struct vm_entry *vm_entry = aux;
 	struct file *file = vm_entry->file;
 	off_t ofs = vm_entry->offset;
@@ -913,22 +920,15 @@ lazy_load_segment (struct page *page, void *aux) {
 	file_seek (file, ofs); // 파일 포인터를 오프셋 위치로 이동
 	
 	if (file_read(file,page->frame->kva,vm_entry->read_bytes) != (int) vm_entry->read_bytes){
-		palloc_free_page(page->frame->kva);
-		free(page->frame);
+		free (vm_entry); /* 실패해도 aux 해제 */
 		return false;
 	} 
 
-	/* 나머지 공간을 0으로 채움 */
+	/* 읽은 데이터 뒤에 남는 영역을 0으로 채움 (제로 패딩) */
 	memset (page->frame->kva + vm_entry->read_bytes, 0, vm_entry->zero_bytes);
 	
-	
-	// if(!install_page(page->va,page->frame->kva,page->writable)){
-	// 	palloc_free_page(page->frame->kva);
-	// 	free(page->frame);
-	// 	return false;
-	// }
-	
-	// free(aux); 나중에 봅시다.
+	/* 첫 로드가 끝나면 anon 페이지라 이후엔 파일이 아닌 스왑을 쓰므로 로딩 정보는 더 이상 필요 없음 */
+	free (vm_entry); 
 	return true;
 }
 
