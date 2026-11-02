@@ -160,8 +160,20 @@ spt_insert_page (struct supplemental_page_table *spt UNUSED,
 
 void
 spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
+	
+	struct spt_entry look_up;
+	look_up.va = page->va;
+	
+	struct hash_elem *e = hash_delete(&spt->SPT_hash, hash_find(&spt->SPT_hash, &look_up.elem));
+	
+	if (e != NULL) {
+		struct spt_entry *find_spt_entry = hash_entry(e, struct spt_entry, elem);
+		free(find_spt_entry);
+	}
+	
 	vm_dealloc_page (page);
-	return true;
+	
+	// return true;
 }
 
 /* Get the struct frame, that will be evicted. */

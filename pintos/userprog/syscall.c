@@ -39,9 +39,10 @@ void seek (int fd, unsigned position); // 미구현
 unsigned tell (int fd); // 미구현
 void sys_close (int fd); // 구현/테스트X
 void *sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset);
-void *sys_munmap(void *addr);
+void sys_munmap(void *addr);
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
+static void check_writable_buffer (void *buf, unsigned size);
 
 /* System call.
  *
@@ -207,7 +208,8 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			f->R.rax = sys_mmap((uintptr_t) f->R.rdi, (size_t) f->R.rsi, (int) f->R.rdx, (int) f->R.r10, (off_t) f->R.r8);
 			break;
 		case SYS_MUNMAP:
-			f->R.rax = sys_munmap((void *) f->R.rdi);
+			// f->R.rax = sys_munmap((uintptr_t) f->R.rdi);
+			sys_munmap((void *) f->R.rdi);
 			break;
 		// case SYS_CHDIR:
 		// 	break;
@@ -266,9 +268,10 @@ syscall_handler (struct intr_frame *f UNUSED) {
  * [4. do_mmap 호출]
  *  - do_mmap(addr, length, writable, file, offset)의 결과를 그대로 리턴
  */
-void *
+void
 sys_munmap(void *addr){
-
+	// uintptr_t *addr = (uintptr_t) addr;
+	do_munmap(addr);
 }
 
 void *
@@ -424,7 +427,7 @@ sys_open(const char *file_name){
 
 int 
 sys_read(int fd, void *buffer, unsigned size){
-	check_buffer(buffer, size); // 버퍼가 정상인지 검사
+	check_writable_buffer(buffer, size);
 	int result = -1;
 
 	// 키보드
@@ -497,4 +500,25 @@ void
 sys_exit(int status){
 	thread_current()->exit_status = status;
 	thread_exit();
+}
+
+
+/* read처럼 커널이 버퍼에 "쓰는" 시스템 콜용 검사 */
+static void
+check_writable_buffer (void *buf, unsigned size) {
+	/* 1. 존재하는 주소인지 (기존 검사) */
+	check_buffer (buf, size);
+	if (size == 0)
+		return;
+
+#ifdef VM
+	/* 2. 버퍼가 걸친 페이지마다 쓰기 가능한지 */
+	const uint8_t *start = buf;
+	const uint8_t *end = start + size - 1;
+	for (const uint8_t *p = pg_round_down (start); p <= end; p += PGSIZE) {
+		struct page *page = spt_find_page (&thread_current ()->spt, (void *) p);
+		if (page != NULL && !page->writable)
+			sys_exit (-1);
+	}
+#endif
 }
