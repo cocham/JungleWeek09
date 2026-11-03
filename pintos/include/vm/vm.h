@@ -67,7 +67,8 @@ struct page {
 struct frame {
 	void *kva;
 	struct page *page;
-
+	struct thread *my_thread;
+	struct list_elem frame_elem;
 	/*
 	01. 물리 메모리 내 사용 가능한 프레임(페이지의 저장 공간)을 추적.
 	02. 프레임 할당 및 해제 기능 구현.
