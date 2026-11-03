@@ -415,7 +415,7 @@ process_exit (void) {
 		palloc_free_page(curr->fd_table);
 		curr->fd_table = NULL;
 	}
-
+	process_cleanup ();
 	sema_up(&curr->parent_sema);  // 부모 프로세스를 깨운다.
 	
 	sema_down(&curr->child_sema); // 자식 즉 본인을 잠재운다.
@@ -431,7 +431,7 @@ process_exit (void) {
 			childs = e;
 		}
 	}
-	process_cleanup ();
+	
 }
 
 /* Free the current process's resources. */
@@ -563,6 +563,7 @@ load (const char *file_name, struct intr_frame *if_) {
 	process_activate (thread_current ());
 
 	/* Open executable file. */
+	lock_acquire (&file_lock); /* done:에서 해제 */
 	file = filesys_open (token_list[0]);
 	if (file == NULL) {
 		printf ("load: %s: open failed\n", file_name);
@@ -650,14 +651,13 @@ load (const char *file_name, struct intr_frame *if_) {
 	success = true;
 
 	// 실행 중인 파일을 붙잡기 - 프로세스가 끝날 때까지 이 파일에 쓰기 금지
-	lock_acquire(&file_lock);
+	// (file_lock은 filesys_open 때부터 잡고 있음)
 	// 기존 파일을 지워줘야 함
 	if (t->running_file != NULL){
 		file_close(t->running_file);
 	}
 	file_deny_write(file); // inode의 쓰기 금지 횟수 +1 (0이 될 때까지 write는 0바이트)
 	t->running_file = file;
-	lock_release(&file_lock);
 
 done:
 	/* We arrive here whether the load is successful or not. */
@@ -665,10 +665,14 @@ done:
 	// 성공: 실행 파일은 running_file로 보관 중이니 닫지 않음
 	// 실패: 이 프로세스는 실행되지 않으니 열었던 파일을 닫음
 	if (!success) {
-		lock_acquire (&file_lock);
+		bool held = lock_held_by_current_thread (&file_lock);
+		if (!held) lock_acquire (&file_lock);
 		file_close (file);
-		lock_release (&file_lock);
+		if (!held) lock_release (&file_lock);
 	}
+	/* filesys_open 전에 실패(goto done)하면 lock을 안 잡은 상태 */
+	if (lock_held_by_current_thread (&file_lock))
+		lock_release (&file_lock);
 
 	return success;
 }
@@ -917,9 +921,14 @@ lazy_load_segment (struct page *page, void *aux) {
 	struct file *file = vm_entry->file;
 	off_t ofs = vm_entry->offset;
 
-	file_seek (file, ofs); // 파일 포인터를 오프셋 위치로 이동
-	
-	if (file_read(file,page->frame->kva,vm_entry->read_bytes) != (int) vm_entry->read_bytes){
+	/* page fault 중에 들어오므로 이미 file_lock을 잡고 있을 수 있음 (sys_read 도중 등) */
+	bool held = lock_held_by_current_thread (&file_lock);
+	if (!held) lock_acquire (&file_lock);
+	/* fork한 자식과 struct file을 공유할 수 있어서 seek+read 대신 read_at 사용 */
+	off_t n = file_read_at (file, page->frame->kva, vm_entry->read_bytes, ofs);
+	if (!held) lock_release (&file_lock);
+
+	if (n != (int) vm_entry->read_bytes){
 		free (vm_entry); /* 실패해도 aux 해제 */
 		return false;
 	} 

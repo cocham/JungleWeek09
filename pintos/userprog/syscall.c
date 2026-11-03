@@ -300,7 +300,13 @@ sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset) {
 	
 	struct file *file = fd_get(fd);
 
-	if(file == NULL || file_length(file) == 0){ 
+	if (file == NULL) {
+		return NULL;
+	}
+	lock_acquire (&file_lock);
+	off_t len = file_length (file);
+	lock_release (&file_lock);
+	if (len == 0) {
 		return NULL;
 	}
 	
@@ -317,7 +323,10 @@ tell (int fd){
 		return -1;
 	}
 
-	return file_tell(file);
+	lock_acquire (&file_lock);
+	unsigned pos = file_tell (file);
+	lock_release (&file_lock);
+	return pos;
 }
 
 int
@@ -343,7 +352,9 @@ void seek (int fd, unsigned position){
 	if(file == NULL){ 
 		return ;
 	}
+	lock_acquire (&file_lock);
 	file_seek(file,position);
+	lock_release (&file_lock);
 }
 
 int 
@@ -354,7 +365,10 @@ filesize (int fd){
 		return -1;
 	}
 
-	return file_length(file);
+	lock_acquire (&file_lock);
+	int len = file_length (file);
+	lock_release (&file_lock);
+	return len;
 } 
 
 bool

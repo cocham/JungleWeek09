@@ -59,8 +59,20 @@ anon_swap_in (struct page *page, void *kva) {
 	bitmap_reset(swap_table,slot);
 
 	anon_page->swap_slot = BITMAP_ERROR;
-	
+
 	return true;
+}
+
+/* fork용: 부모 슬롯의 내용을 kva로 읽기만 함 (슬롯 반납 X) */
+void
+anon_copy_slot (struct page *src, void *kva) {
+	size_t slot = src->anon.swap_slot;
+
+	ASSERT (slot != BITMAP_ERROR);
+
+	for (int i = 0; i < SECTORS_PER_PAGE; i++) {
+		disk_read(swap_disk, slot * SECTORS_PER_PAGE + i, kva + i * DISK_SECTOR_SIZE);
+	}
 }
 
 /* Swap out the page by writing contents to the swap disk. */

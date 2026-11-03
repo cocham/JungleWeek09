@@ -1,7 +1,12 @@
 /* file.c: Implementation of memory backed file object (mmaped object). */
 
+#include <string.h>
 #include "vm/vm.h"
 #include "threads/thread.h"
+#include "threads/malloc.h"
+#include "threads/mmu.h"
+#include "threads/synch.h"
+#include "userprog/syscall.h"
 #include <round.h>
 #include "userprog/process.h"
 #include "threads/vaddr.h"
@@ -56,30 +61,59 @@ file_backed_initializer (struct page *page, enum vm_type type, void *kva) {
 static bool
 file_backed_swap_in (struct page *page, void *kva) {
 	struct file_page *file_page UNUSED = &page->file;
+	
+	bool held = lock_held_by_current_thread (&file_lock);
+	if (!held) lock_acquire (&file_lock);
+	off_t n = file_read_at(file_page->file, kva, file_page->read_bytes, file_page->offset);
+	if (!held) lock_release (&file_lock);
+
+	if (n != (int) file_page->read_bytes) {
+		return false;
+	}
+	memset(kva + file_page->read_bytes, 0, file_page->zero_bytes);
+	return true;
 }
 
 /* Swap out the page by writeback contents to the file. */
 static bool
 file_backed_swap_out (struct page *page) {
 	struct file_page *file_page UNUSED = &page->file;
+	struct thread *cur = page->frame->my_thread;
+	uint64_t *pml4 = cur->pml4;
+
+	if (pml4_is_dirty(pml4, page->va)) {
+		bool held = lock_held_by_current_thread (&file_lock);
+		if (!held) lock_acquire (&file_lock);
+		file_write_at(page->file.file, page->frame->kva, page->file.read_bytes, page->file.offset);
+		if (!held) lock_release (&file_lock);
+		pml4_set_dirty(pml4, page->va, false);
+	};
+	
+	return true;
 }
 
 /* Destory the file backed page. PAGE will be freed by the caller. */
 static void
 file_backed_destroy (struct page *page) {
+	if (page->frame == NULL) return;
+	
 	struct thread *cur = thread_current();
 	uint64_t *pml4 = cur->pml4;
 
 	if (pml4_is_dirty(pml4, page->va)) {
+		bool held = lock_held_by_current_thread (&file_lock);
+		if (!held) lock_acquire (&file_lock);
 		file_write_at(page->file.file, page->frame->kva, page->file.read_bytes, page->file.offset);
+		if (!held) lock_release (&file_lock);
 	};
 	
+	list_remove(&page->frame->frame_elem);
 	pml4_clear_page (cur->pml4, page->va);
 	palloc_free_page(page->frame->kva);
 	free(page->frame);
 	page->frame = NULL;
 	
-	struct file_page *file_page UNUSED = &page->file;
+	
 }
 
 /* Do the mmap */
@@ -145,7 +179,10 @@ do_mmap (void *addr, size_t length, int writable, struct file *file, off_t offse
 	*    - 실패하면 NULL 리턴
 	*/
 
+	lock_acquire (&file_lock);
 	struct file *map_file = file_reopen (file);
+	off_t file_len = map_file != NULL ? file_length (map_file) : 0; // 파일 전체 크기
+	lock_release (&file_lock);
 	if (map_file == NULL) {
 		return NULL;
 	}
@@ -157,7 +194,6 @@ do_mmap (void *addr, size_t length, int writable, struct file *file, off_t offse
 	*    - 아니면 읽을 양 = min(파일에 남은 양, length)
 	*    - 0 채울 양 = 페이지 수 × PGSIZE - 읽을 양
 	*/
-	off_t file_len = file_length (map_file); // 파일 전체 크기
 	uint32_t read_bytes = 0;
 	if (offset < file_len) {
 		read_bytes = file_len - offset;
@@ -190,7 +226,7 @@ do_mmap (void *addr, size_t length, int writable, struct file *file, off_t offse
 		aux->page_cnt = page_cnt;
 
 		if (!vm_alloc_page_with_initializer (VM_FILE, addr, writable, lazy_load_segment, aux)) {
-			if (aux->file) file_close(aux->file);
+
 			free(aux);
 			return NULL;
 		}
@@ -202,44 +238,38 @@ do_mmap (void *addr, size_t length, int writable, struct file *file, off_t offse
 		addr += PGSIZE;
 	}
 
-	return start;
+	return (void *) start;
 	
 }
 
 /* Do the munmap */
 void
 do_munmap (void *addr) {
+	struct supplemental_page_table *spt = &thread_current ()->spt;
+	struct page *page = spt_find_page (spt, addr);
 
-	uintptr_t start = (uintptr_t) addr;
-	struct page *page;
-	struct supplemental_page_table *spt = &thread_current()->spt;
+	if (page == NULL || page_get_type (page) != VM_FILE)   /* 없거나 mmap 페이지가 아니면 무시 */
+		return;
+
+	int count;
 	struct file *file;
-
-	page = spt_find_page(spt,addr);
-	
-	enum vm_type vm = page->operations->type;
-	int count ;
-
-	if(VM_TYPE(vm) == VM_UNINIT){
+	if (VM_TYPE (page->operations->type) == VM_UNINIT) {
 		struct vm_entry *aux = page->uninit.aux;
 		count = aux->page_cnt;
 		file = aux->file;
-	}else if (VM_TYPE(vm) == VM_FILE){
+	} else {
 		count = page->file.page_cnt;
 		file = page->file.file;
-	}else{
-		return NULL;
 	}
-	
-	struct page *next;
 
-	for(int j = 0; j < count; j++){
-		next = spt_find_page (spt, addr + j * PGSIZE);
-		spt_remove_page(spt, next);
+	for (int j = 0; j < count; j++) {
+		struct page *next = spt_find_page (spt, addr + j * PGSIZE);
+		if (next != NULL)                                  /* NULL이면 건너뜀 */
+			spt_remove_page (spt, next);
 	}
-	
-	
+
+	bool held = lock_held_by_current_thread (&file_lock);
+	if (!held) lock_acquire (&file_lock);
 	file_close (file);
-	
-
+	if (!held) lock_release (&file_lock);
 }
