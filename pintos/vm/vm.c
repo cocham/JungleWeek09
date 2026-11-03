@@ -242,9 +242,15 @@ vm_evict_frame (void) {
 
 	struct page *victim_page = victim->page;
 	pml4_clear_page (victim->my_thread->pml4, victim->page->va);
-	swap_out (victim_page);
 
-	return NULL;
+	if (!swap_out (victim_page)) {
+		return NULL;
+	}
+
+	victim_page->frame = NULL;
+	victim->page = NULL;
+	
+	return victim;	
 }
 
 /* palloc() and get frame. If there is no available page, evict the page
@@ -264,12 +270,8 @@ vm_get_frame (void) {
 		if (frame == NULL){
 			return NULL;
 		}
-		
-		// frame->kva = victim->kva;
-		// free(victim);
-		// victim->page = NULL;
-		// return victim; 
-
+	} else {
+		list_push_back (&frame_table, &frame->frame_elem);
 	}
 	
 	frame->page = NULL; // 페이지 멤버 초기화
