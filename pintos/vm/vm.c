@@ -1,6 +1,9 @@
 /* vm.c: Generic interface for virtual memory objects. */
 
+#include <string.h>
 #include "threads/malloc.h"
+#include "threads/synch.h"
+#include "userprog/syscall.h"
 #include "vm/vm.h"
 #include "vm/inspect.h"
 #include "lib/kernel/hash.h"
@@ -198,6 +201,13 @@ vm_get_victim (void) {
 	
 	while (true) {
 		find_frame = list_entry(find_elem, struct frame, frame_elem);
+
+		/* 아직 page가 연결되지 않은 frame(claim 도중)은 건너뜀 */
+		if (find_frame->page == NULL) {
+			find_elem = clock_next (find_elem);
+			continue;
+		}
+
 		uint64_t *pml4 = find_frame->my_thread->pml4;
 		
 		if(pml4_is_accessed(pml4,find_frame->page->va)) {
@@ -385,8 +395,12 @@ vm_do_claim_page (struct page *page) {
 	frame->page = page;
 	page->frame = frame;
 	
-	if (!pml4_set_page(thread_current ()->pml4, page->va, frame->kva, page->writable)) {
-		vm_dealloc_page(page); /* 문제 발생 시 추후 수정 (페이지를 물리 메모리와 가상 공간에서 아예 삭제)*/
+	if (!pml4_set_page (thread_current ()->pml4, page->va, frame->kva, page->writable)) {
+		page->frame = NULL;
+		frame->page = NULL;
+		list_remove (&frame->frame_elem);
+		palloc_free_page (frame->kva);
+		free (frame);
 		return false;
 	}
 	
@@ -459,22 +473,33 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 					}
 				
 				} else if (type == VM_FILE || type == VM_ANON) {
+					/* 자식 페이지 만들고 frame 붙이기 */
+					if (!vm_alloc_page (type, va, writable))
+						return false;
+					struct page *dst_page = spt_find_page (dst, va);
+					if (!vm_do_claim_page (dst_page))
+						return false;
 
-					if (!vm_alloc_page(type, va, writable)) return false;
+					/* file 페이지는 파일 정보도 복사 (aux가 없어서 initializer가 못 채움) */
+					if (type == VM_FILE)
+						dst_page->file = src_page->file;
 
-					struct page *dst_page = spt_find_page(dst, va);
-
-					if (!vm_do_claim_page(dst_page)) return false;
-					
-					memcpy(dst_page->frame->kva, src_page->frame->kva, PGSIZE);
-					// frame copy
-				
-				} else {
-
-					return false;
+					/* 내용 복사: 위의 claim이 evict를 일으켰을 수 있으니 복사 직전에 부모 상태 확인 */
+					if (src_page->frame != NULL) {
+						memcpy (dst_page->frame->kva, src_page->frame->kva, PGSIZE);
+					} else if (type == VM_ANON) {
+						/* 부모는 swap 디스크에 있음: 읽기만 하고 부모 슬롯은 그대로 둠 */
+						anon_copy_slot (src_page, dst_page->frame->kva);
+					} else {
+						struct file_page *fp = &src_page->file;                        /* 부모는 파일로 나가 있음 */
+						bool held = lock_held_by_current_thread (&file_lock);
+						if (!held) lock_acquire (&file_lock);
+						file_read_at (fp->file, dst_page->frame->kva, fp->read_bytes, fp->offset);
+						if (!held) lock_release (&file_lock);
+						memset (dst_page->frame->kva + fp->read_bytes, 0, fp->zero_bytes);
+					}
 				}
-				// hash_insert(&dst->SPT_hash, &ds);
-				
+								
 			}
 			return true;
 }
