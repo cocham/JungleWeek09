@@ -16,7 +16,10 @@
 #include "devices/input.h"     // input_getc
 #include "userprog/process.h"
 #include "threads/palloc.h"
-#include "threads/init.h" 
+#include "threads/init.h" S
+#ifdef VM
+#include "vm/vm.h"
+#endif
 
 typedef int pid_t;
 struct lock file_lock;
@@ -35,9 +38,11 @@ int sys_write(int fd, const void *buffer, unsigned size); // 구현/테스트X
 void seek (int fd, unsigned position); // 미구현
 unsigned tell (int fd); // 미구현
 void sys_close (int fd); // 구현/테스트X
-
+void *sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset);
+void sys_munmap(void *addr);
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
+static void check_writable_buffer (void *buf, unsigned size);
 
 /* System call.
  *
@@ -70,9 +75,30 @@ syscall_init (void) {
 // 포인터가 존재하는지 확인하는 유틸 함수
 static void 
 check_address(const void *ptr){
-	if(ptr == NULL || !is_user_vaddr(ptr) || !pml4_get_page(thread_current()->pml4, ptr)){
+	/* 1. NULL이나 커널 주소면 바로 종료 */
+	if (ptr == NULL || !is_user_vaddr(ptr))
 		sys_exit(-1);
-	}
+
+	/* 2. 이미 매핑돼 있으면 통과 */
+	if (pml4_get_page(thread_current()->pml4, ptr))
+		return;
+
+	#ifdef VM
+		/* 3. 매핑은 없지만 SPT에 등록된 페이지면 통과
+		*    (커널이 접근할 때 page fault로 올라옴) */
+		if (spt_find_page(&thread_current()->spt, pg_round_down(ptr)))
+			return;
+
+		uintptr_t addr = (uintptr_t) ptr;
+		uintptr_t rsp = thread_current ()->user_rsp;
+		if (addr >= rsp - 8 && addr >= USER_STACK - ONE_MB && addr < USER_STACK) {
+			return;	
+		}	
+	#endif
+
+	/* 4. 어디에도 없으면 잘못된 주소 */
+	sys_exit(-1);
+
 }
 
 static void
@@ -83,6 +109,8 @@ check_buffer(const void *buf, unsigned size){
 
 	const uint8_t *start = buf; // 버퍼의 시작
 	const uint8_t *end = start + size - 1; //주소의 끝
+
+	check_address(start);
 
 	// 주소의 끝까지 페이지를 이동하면서 구경
 	for(const uint8_t *page = pg_round_down(start); page <= end; page += PGSIZE){
@@ -104,7 +132,8 @@ check_string (const char *str) {
 /* The main system call interface */
 void
 syscall_handler (struct intr_frame *f UNUSED) {
-
+	thread_current()->user_rsp = (uintptr_t) f->rsp; //변환 값 나중에 확인?
+	
 	// rax = 시스템 콜 번호
 	// rip; 돌아갈 주소
     // cs; 돌아갈 모드
@@ -175,10 +204,13 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			sys_close ((int) f->R.rdi);
 			break;
 		// Project Part 3 - 4
-		// case SYS_MMAP:
-		// 	break;
-		// case SYS_MUNMAP:
-		// 	break;
+		case SYS_MMAP:
+			f->R.rax = sys_mmap((uintptr_t) f->R.rdi, (size_t) f->R.rsi, (int) f->R.rdx, (int) f->R.r10, (off_t) f->R.r8);
+			break;
+		case SYS_MUNMAP:
+			// f->R.rax = sys_munmap((uintptr_t) f->R.rdi);
+			sys_munmap((void *) f->R.rdi);
+			break;
 		// case SYS_CHDIR:
 		// 	break;
 		// case SYS_MKDIR:
@@ -208,6 +240,81 @@ syscall_handler (struct intr_frame *f UNUSED) {
 // halt(void){
 // 	power_off();
 // }
+
+/* sys_mmap (userprog/syscall.c)
+ *
+ * [1. 주소 검사]
+ *  - addr == NULL → 실패                     (mmap-null)
+ *  - addr이 페이지 정렬 안 됨 → 실패          (mmap-misalign)
+ *  - addr이 커널 주소 → 실패                  (mmap-kernel)
+ *  - addr + length가 커널 영역으로 넘어가거나
+ *    덧셈이 넘쳐서 addr보다 작아짐 → 실패      (mmap-kernel)
+ *
+ * [2. 길이/오프셋 검사]
+ *  - length == 0 → 실패                       (mmap-zero-len)
+ *  - offset이 페이지 정렬 안 됨 → 실패         (mmap-bad-off)
+    - offset = 4096일 때
+    - 
+    - 파일:   [0~4095][4096~8191][8192~12287] ...
+    -                     ↓          ↓
+    - 메모리:         [addr 페이지][addr+4KB 페이지]
+
+ *
+ * [3. fd 검사]
+ *  - fd가 0, 1(콘솔) → 실패                   (mmap-bad-fd2, 3)
+ *  - fd_get(fd)로 file 못 찾음 → 실패          (mmap-bad-fd)
+ *  - file_length(file) == 0 → 실패            (mmap-zero)
+ *
+ * [4. do_mmap 호출]
+ *  - do_mmap(addr, length, writable, file, offset)의 결과를 그대로 리턴
+ */
+void
+sys_munmap(void *addr){
+	// uintptr_t *addr = (uintptr_t) addr;
+	do_munmap(addr);
+}
+
+void *
+sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset) {
+	
+	uintptr_t start = (uintptr_t) addr;
+
+	/* 1. 주소 검사 */
+	if (addr == NULL) return NULL;
+	if (pg_ofs (addr) != 0) return NULL; /* 페이지 경계 검사 */
+	
+	// 2. offset 검사
+	if (length <= 0 || offset < 0 || offset % PGSIZE != 0) {
+		return NULL;
+	}
+
+	/* 유저 영역 검사 */
+	if (start + length < start) return NULL;
+	if (is_kernel_vaddr (addr) || is_kernel_vaddr ((void *)(start + length - 1))) return NULL;
+	
+	//3. fd 검사
+	
+	if (fd <= 1 || fd >= FD_MAX){
+		return NULL;
+	}
+	
+	struct file *file = fd_get(fd);
+
+	if (file == NULL) {
+		return NULL;
+	}
+	lock_acquire (&file_lock);
+	off_t len = file_length (file);
+	lock_release (&file_lock);
+	if (len == 0) {
+		return NULL;
+	}
+	
+	return do_mmap(addr,length,writable,file,offset);
+	
+} 
+
+
 unsigned 
 tell (int fd){
 	struct file *file = fd_get(fd);
@@ -216,7 +323,10 @@ tell (int fd){
 		return -1;
 	}
 
-	return file_tell(file);
+	lock_acquire (&file_lock);
+	unsigned pos = file_tell (file);
+	lock_release (&file_lock);
+	return pos;
 }
 
 int
@@ -242,7 +352,9 @@ void seek (int fd, unsigned position){
 	if(file == NULL){ 
 		return ;
 	}
+	lock_acquire (&file_lock);
 	file_seek(file,position);
+	lock_release (&file_lock);
 }
 
 int 
@@ -253,7 +365,10 @@ filesize (int fd){
 		return -1;
 	}
 
-	return file_length(file);
+	lock_acquire (&file_lock);
+	int len = file_length (file);
+	lock_release (&file_lock);
+	return len;
 } 
 
 bool
@@ -326,7 +441,7 @@ sys_open(const char *file_name){
 
 int 
 sys_read(int fd, void *buffer, unsigned size){
-	check_buffer(buffer, size); // 버퍼가 정상인지 검사
+	check_writable_buffer(buffer, size);
 	int result = -1;
 
 	// 키보드
@@ -399,4 +514,25 @@ void
 sys_exit(int status){
 	thread_current()->exit_status = status;
 	thread_exit();
+}
+
+
+/* read처럼 커널이 버퍼에 "쓰는" 시스템 콜용 검사 */
+static void
+check_writable_buffer (void *buf, unsigned size) {
+	/* 1. 존재하는 주소인지 (기존 검사) */
+	check_buffer (buf, size);
+	if (size == 0)
+		return;
+
+#ifdef VM
+	/* 2. 버퍼가 걸친 페이지마다 쓰기 가능한지 */
+	const uint8_t *start = buf;
+	const uint8_t *end = start + size - 1;
+	for (const uint8_t *p = pg_round_down (start); p <= end; p += PGSIZE) {
+		struct page *page = spt_find_page (&thread_current ()->spt, (void *) p);
+		if (page != NULL && !page->writable)
+			sys_exit (-1);
+	}
+#endif
 }

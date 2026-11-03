@@ -12,5 +12,6 @@ void process_activate (struct thread *next);
 int fd_alloc (struct file *file);
 struct file *fd_get (int fd);
 void fd_close (int fd);
+bool lazy_load_segment (struct page *page, void *aux);
 
 #endif /* userprog/process.h */

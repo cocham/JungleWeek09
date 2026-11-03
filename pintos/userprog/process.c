@@ -415,7 +415,7 @@ process_exit (void) {
 		palloc_free_page(curr->fd_table);
 		curr->fd_table = NULL;
 	}
-
+	process_cleanup ();
 	sema_up(&curr->parent_sema);  // 부모 프로세스를 깨운다.
 	
 	sema_down(&curr->child_sema); // 자식 즉 본인을 잠재운다.
@@ -431,7 +431,7 @@ process_exit (void) {
 			childs = e;
 		}
 	}
-	process_cleanup ();
+	
 }
 
 /* Free the current process's resources. */
@@ -563,6 +563,7 @@ load (const char *file_name, struct intr_frame *if_) {
 	process_activate (thread_current ());
 
 	/* Open executable file. */
+	lock_acquire (&file_lock); /* done:에서 해제 */
 	file = filesys_open (token_list[0]);
 	if (file == NULL) {
 		printf ("load: %s: open failed\n", file_name);
@@ -650,14 +651,13 @@ load (const char *file_name, struct intr_frame *if_) {
 	success = true;
 
 	// 실행 중인 파일을 붙잡기 - 프로세스가 끝날 때까지 이 파일에 쓰기 금지
-	lock_acquire(&file_lock);
+	// (file_lock은 filesys_open 때부터 잡고 있음)
 	// 기존 파일을 지워줘야 함
 	if (t->running_file != NULL){
 		file_close(t->running_file);
 	}
 	file_deny_write(file); // inode의 쓰기 금지 횟수 +1 (0이 될 때까지 write는 0바이트)
 	t->running_file = file;
-	lock_release(&file_lock);
 
 done:
 	/* We arrive here whether the load is successful or not. */
@@ -665,10 +665,14 @@ done:
 	// 성공: 실행 파일은 running_file로 보관 중이니 닫지 않음
 	// 실패: 이 프로세스는 실행되지 않으니 열었던 파일을 닫음
 	if (!success) {
-		lock_acquire (&file_lock);
+		bool held = lock_held_by_current_thread (&file_lock);
+		if (!held) lock_acquire (&file_lock);
 		file_close (file);
-		lock_release (&file_lock);
+		if (!held) lock_release (&file_lock);
 	}
+	/* filesys_open 전에 실패(goto done)하면 lock을 안 잡은 상태 */
+	if (lock_held_by_current_thread (&file_lock))
+		lock_release (&file_lock);
 
 	return success;
 }
@@ -900,35 +904,40 @@ install_page (void *upage, void *kpage, bool writable) {
  * If you want to implement the function for only project 2, implement it on the
  * upper block. */
 
-static bool
+bool
 lazy_load_segment (struct page *page, void *aux) {
 	
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
+	/*
+	    페이지 폴트 발생 시 호출되어 해당 페이지에 실제 데이터를 파일에서 읽어오는 함수.
+	    aux로 전달된 vm_entry 구조체에서 파일, 읽을 바이트 수, 오프셋 등 로딩 정보를 가져옴.
+	    파일에서 필요한 바이트만큼 page->frame->kva(물리 메모리)에 읽어들임.
+	    읽은 데이터 이후 남은 부분은 0으로 초기화(제로 패딩).
+	    동적 할당한 vm_entry 메모리를 해제.
+	*/
 	struct vm_entry *vm_entry = aux;
 	struct file *file = vm_entry->file;
 	off_t ofs = vm_entry->offset;
 
-	file_seek (file, ofs); // 파일 포인터를 오프셋 위치로 이동
-	
-	if (file_read(file,page->frame->kva,vm_entry->read_bytes) != (int) vm_entry->read_bytes){
-		palloc_free_page(page->frame->kva);
-		free(page->frame);
+	/* page fault 중에 들어오므로 이미 file_lock을 잡고 있을 수 있음 (sys_read 도중 등) */
+	bool held = lock_held_by_current_thread (&file_lock);
+	if (!held) lock_acquire (&file_lock);
+	/* fork한 자식과 struct file을 공유할 수 있어서 seek+read 대신 read_at 사용 */
+	off_t n = file_read_at (file, page->frame->kva, vm_entry->read_bytes, ofs);
+	if (!held) lock_release (&file_lock);
+
+	if (n != (int) vm_entry->read_bytes){
+		free (vm_entry); /* 실패해도 aux 해제 */
 		return false;
 	} 
 
-	/* 나머지 공간을 0으로 채움 */
+	/* 읽은 데이터 뒤에 남는 영역을 0으로 채움 (제로 패딩) */
 	memset (page->frame->kva + vm_entry->read_bytes, 0, vm_entry->zero_bytes);
 	
-	
-	// if(!install_page(page->va,page->frame->kva,page->writable)){
-	// 	palloc_free_page(page->frame->kva);
-	// 	free(page->frame);
-	// 	return false;
-	// }
-	
-	// free(aux); 나중에 봅시다.
+	/* 첫 로드가 끝나면 anon 페이지라 이후엔 파일이 아닌 스왑을 쓰므로 로딩 정보는 더 이상 필요 없음 */
+	free (vm_entry); 
 	return true;
 }
 
@@ -987,11 +996,12 @@ setup_stack (struct intr_frame *if_) {
 	bool success = false;
 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
 
-	/* TODO: Map the stack on stack_bottom and claim the page immediately.
-	 * TODO: If success, set the rsp accordingly.
-	 * TODO: You should mark the page is stack. */
-	/* TODO: Your code goes here */
-
+	if (vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true)) {
+		success = vm_claim_page (stack_bottom);
+		if (success) {
+			if_->rsp = USER_STACK;
+		}
+	}
 	return success;
 }
 #endif /* VM */
