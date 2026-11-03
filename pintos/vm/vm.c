@@ -6,12 +6,17 @@
 #include "lib/kernel/hash.h"
 #include "threads/vaddr.h"
 
+
+static struct list frame_table;
+
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
 void
 vm_init (void) {
 	vm_anon_init ();
 	vm_file_init ();
+	list_init (&frame_table);
+	
 #ifdef EFILESYS  /* For project 4 */
 	pagecache_init ();
 #endif
@@ -176,14 +181,53 @@ spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
 	// return true;
 }
 
+static struct list_elem *
+clock_next (struct list_elem *e) {
+	if (e->next == list_end (&frame_table))
+		return list_begin (&frame_table);
+	else
+		return e->next;
+}
+
 /* Get the struct frame, that will be evicted. */
 static struct frame *
 vm_get_victim (void) {
-	struct frame *victim = NULL;
+	struct list_elem *find_elem = list_begin(&frame_table);
+	struct frame *find_frame;
 	 /* TODO: The policy for eviction is up to you. */
-
-	return victim;
+	
+	while (true) {
+		find_frame = list_entry(find_elem, struct frame, frame_elem);
+		uint64_t *pml4 = find_frame->my_thread->pml4;
+		
+		if(pml4_is_accessed(pml4,find_frame->page->va)) {
+			pml4_set_accessed(pml4,find_frame->page->va,false);
+			find_elem = clock_next(find_elem);
+		}else{
+			return find_frame;
+		}
+	}
 }
+
+// static struct frame *
+// vm_get_victim (void) {
+// 	struct frame *victim = NULL;
+// 	struct list_elem *find_elem = list_begin(&frame_table);
+// 	for (size_t i = 0; i < 2 * list_size(&frame_table); i++) {
+// 		struct frame *f = list_entry(find_elem, struct frame, frame_elem);
+// 		clock_next(find_elem);
+
+// 		uint64_t *pml4 = f->my_thread->pml4;
+// 		if (pml4_is_accessed(pml4, f->page->va)) {
+// 			pml4_set_accessed(pml4, f->page->va, false);
+// 		} else {
+// 			victim = f;
+// 			break;
+// 		}
+// 		find_elem = clock_next(find_elem);
+// 	}
+// 	return NULL
+// }
 
 /* Evict one page and return the corresponding frame.
  * Return NULL on error.*/
@@ -191,6 +235,14 @@ static struct frame *
 vm_evict_frame (void) {
 	struct frame *victim UNUSED = vm_get_victim ();
 	/* TODO: swap out the victim and return the evicted frame. */
+	
+	if(victim == NULL) {
+		return NULL;
+	}
+
+	struct page *victim_page = victim->page;
+	pml4_clear_page (victim->my_thread->pml4, victim->page->va);
+	swap_out (victim_page);
 
 	return NULL;
 }
@@ -206,13 +258,23 @@ vm_get_frame (void) {
 	ASSERT(frame != NULL);
 
 	frame->kva = palloc_get_page(PAL_USER);
-	
 	if (frame->kva == NULL) { // frame에서 가용 가능한 페이지가 없다면
-
 		free(frame);
-		PANIC("todo");
+		frame = vm_evict_frame();
+		if (frame == NULL){
+			return NULL;
+		}
+		
+		// frame->kva = victim->kva;
+		// free(victim);
+		// victim->page = NULL;
+		// return victim; 
+
 	}
+	
 	frame->page = NULL; // 페이지 멤버 초기화
+	frame->my_thread = thread_current();
+
 	/* TODO: Fill this function. */
 	/*  user pool by calling palloc_get_page (PALLOC_USER)  */
 	/* allocates a frame(kva), initialize its members(page), and returns it */
